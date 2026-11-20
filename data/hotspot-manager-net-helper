@@ -1,0 +1,135 @@
+#!/bin/sh
+set -eu
+
+STATE_DIR=/var/lib/hotspot-manager
+TTL_STATE="$STATE_DIR/ttl"
+COUNTRY_STATE="$STATE_DIR/country"
+TTL_TABLE=hotspot_ttl
+NM_CONNECTION_FILE=/etc/NetworkManager/system-connections/Hotspot.nmconnection
+
+die() {
+    echo "hotspot-manager-net-helper: $*" >&2
+    exit 1
+}
+
+valid_iface() {
+    case "$1" in
+        ""|*[!A-Za-z0-9_.-]*) return 1 ;;
+    esac
+    return 0
+}
+
+find_wifi() {
+    for path in /sys/class/net/*; do
+        name=${path##*/}
+        if [ -e "$path/device" ] && [ -e "$path/phy80211" ]; then
+            echo "$name"
+            return 0
+        fi
+    done
+    return 1
+}
+
+ensure() {
+    wifi=$1
+    ap=$2
+    valid_iface "$wifi" || die "invalid interface name: $wifi"
+    valid_iface "$ap" || die "invalid interface name: $ap"
+    [ -d "/sys/class/net/$wifi" ] || die "no such interface: $wifi"
+    if [ -d "/sys/class/net/$ap" ]; then
+        return 0
+    fi
+    iw dev "$wifi" interface add "$ap" type __ap
+}
+
+ttl_clear() {
+    nft delete table inet "$TTL_TABLE" 2>/dev/null || true
+}
+
+ttl_apply() {
+    iface=$1
+    ttl=$2
+    valid_iface "$iface" || die "invalid interface name: $iface"
+    case "$ttl" in
+        ""|*[!0-9]*) die "invalid TTL: $ttl" ;;
+    esac
+    [ "$ttl" -ge 1 ] 2>/dev/null && [ "$ttl" -le 255 ] || die "TTL out of range: $ttl"
+    ttl_clear
+    nft add table inet "$TTL_TABLE"
+    nft "add chain inet $TTL_TABLE post { type filter hook postrouting priority mangle; policy accept; }"
+    nft "add rule inet $TTL_TABLE post iifname \"$iface\" ip ttl set $ttl"
+    nft "add rule inet $TTL_TABLE post iifname \"$iface\" ip6 hoplimit set $ttl"
+}
+
+reg_set() {
+    code=$(echo "$1" | tr '[:lower:]' '[:upper:]')
+    case "$code" in
+        [A-Z][A-Z]) ;;
+        *) die "invalid country code: $1" ;;
+    esac
+    install -d "$STATE_DIR"
+    echo "$code" >"$COUNTRY_STATE"
+    iw reg set "$code"
+}
+
+reg_clear() {
+    rm -f "$COUNTRY_STATE"
+    iw reg set 00
+}
+
+boot() {
+    if [ -r "$COUNTRY_STATE" ]; then
+        code=$(cat "$COUNTRY_STATE")
+        case "$code" in
+            [A-Z][A-Z]) iw reg set "$code" ;;
+        esac
+    fi
+    [ -r "$NM_CONNECTION_FILE" ] || return 0
+    grep -q '^interface-name=.*ap$' "$NM_CONNECTION_FILE" || return 0
+    wifi=$(find_wifi) || return 0
+    ensure "$wifi" "${wifi}ap"
+}
+
+case "${1:-}" in
+    ensure)
+        [ $# -eq 3 ] || die "usage: $0 ensure WIFI AP"
+        ensure "$2" "$3"
+        ;;
+    boot)
+        boot
+        ;;
+    ttl-set)
+        [ $# -eq 2 ] || die "usage: $0 ttl-set N"
+        install -d "$STATE_DIR"
+        case "$2" in
+            ""|*[!0-9]*) die "invalid TTL: $2" ;;
+        esac
+        echo "$2" >"$TTL_STATE"
+        if [ "$2" -eq 0 ]; then
+            ttl_clear
+        else
+            iface=$(nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null |
+                awk -F: '$1 == "Hotspot" {print $2; exit}')
+            if valid_iface "${iface:-}"; then
+                ttl_apply "$iface" "$2" || true
+            fi
+        fi
+        ;;
+    ttl-apply)
+        [ $# -eq 3 ] || die "usage: $0 ttl-apply IFACE TTL"
+        ttl_apply "$2" "$3"
+        ;;
+    ttl-clear)
+        ttl_clear
+        ;;
+    reg-set)
+        [ $# -eq 2 ] || die "usage: $0 reg-set CC"
+        reg_set "$2"
+        ;;
+    reg-clear)
+        reg_clear
+        ;;
+    *)
+        die "usage: $0 ensure WIFI AP | boot | ttl-set N | ttl-apply IFACE TTL | ttl-clear | reg-set CC | reg-clear"
+        ;;
+esac

@@ -1,0 +1,13 @@
+[Unit]
+Description=Create the virtual Wi-Fi AP interface used by Hotspot Manager
+Wants=systemd-udev-settle.service
+After=systemd-udev-settle.service
+Before=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/hotspot-manager-net-helper boot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

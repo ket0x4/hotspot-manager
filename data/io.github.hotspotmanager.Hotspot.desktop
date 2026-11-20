@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Hotspot
+GenericName=Wi-Fi Hotspot
+Comment=Share your connection over Wi-Fi
+Exec=hotspot-manager
+Icon=io.github.hotspotmanager.Hotspot
+Terminal=false
+Categories=Network;
+Keywords=tethering;wifi;access point;share;
+StartupNotify=true
